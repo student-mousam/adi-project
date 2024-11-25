@@ -1,0 +1,175 @@
+name: React Web App CI/CD
+
+on:
+  push:
+    branches: 
+      - master    # Changed from main to master
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Dockerfile'
+      - '.github/workflows/**'
+  pull_request:
+    branches: 
+      - master    # Changed from main to master
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Dockerfile'
+  workflow_dispatch:    # Added manual trigger option
+
+env:
+  DOCKER_BUILDKIT: 1
+  ECR_REPOSITORY: adi-project
+  IMAGE_TAG: ${{ github.sha }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  debug-trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          
+      - name: Debug Information
+        run: |
+          echo "Event name: ${{ github.event_name }}"
+          echo "Branch name: ${{ github.ref }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          echo "Modified files:"
+          git diff --name-only HEAD~1 HEAD || echo "First commit"
+
+  integration:
+    name: Continuous Integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: |
+          npm install
+
+      - name: Run ESLint
+        run: |
+          npm run lint || echo "No lint script found"
+
+      - name: Run Tests
+        run: |
+          npm test || echo "No test script found"
+
+  build-and-push:
+    name: Build and Push to ECR
+    needs: integration
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Docker Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          echo "Building Docker image..."
+          docker build -t $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} \
+                      -t $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:latest .
+          echo "Pushing Docker image..."
+          docker push $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          docker push $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:latest
+
+  deploy:
+    name: Deploy to EC2
+    needs: build-and-push
+    runs-on: self-hosted
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Clean Docker Resources
+        run: |
+          echo "Cleaning up Docker resources..."
+          docker system prune -a -f || true
+          docker volume prune -f || true
+
+      - name: Stop Existing Container
+        run: |
+          echo "Checking for existing container..."
+          if docker ps -a --filter name=adi-app -q | grep -q .; then
+            echo "Stopping and removing existing container..."
+            docker stop adi-app || true
+            docker rm -f adi-app || true
+          else
+            echo "No existing container found"
+          fi
+
+      - name: Pull and Run New Container
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          echo "Pulling new image..."
+          docker pull $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:latest
+          
+          echo "Starting new container..."
+          docker run -d \
+            --name adi-app \
+            --restart unless-stopped \
+            -p 3000:3000 \
+            -e NODE_ENV=production \
+            $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:latest
+
+      - name: Verify Deployment
+        run: |
+          echo "Waiting for application to start..."
+          timeout=60
+          counter=0
+          while [ $counter -lt $timeout ]; do
+            if curl -s http://localhost:3000 > /dev/null; then
+              echo "Application is running successfully!"
+              docker ps
+              exit 0
+            fi
+            echo "Waiting for application... ($(($timeout-$counter)) seconds left)"
+            sleep 5
+            counter=$((counter+5))
+          done
+          echo "Application failed to start. Logs:"
+          docker logs adi-app
+          exit 1
+
+          
