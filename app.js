@@ -6,7 +6,6 @@ const port = 3000;
 // Serve static files from the 'public' directory
 app.use(express.static('public'));
 
-
 app.listen(port, () => {
     console.log(`Travel app listening at http://localhost:${port}`);
 });
