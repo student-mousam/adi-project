@@ -3,6 +3,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Menu and Navigation functionality
     const menu = document.querySelector('#menu-btn');
     const navbar = document.querySelector('.header .navbar');
+
     
     function updateMenuAndNavbar() {
         const scrollY = window.scrollY || window.pageYOffset;
