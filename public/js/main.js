@@ -5,6 +5,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const navbar = document.querySelector('.header .navbar');
 
     
+    
     function updateMenuAndNavbar() {
         const scrollY = window.scrollY || window.pageYOffset;
         
